@@ -1,3 +1,4 @@
 #!/bin/bash
 echo "start streamlit server"
-exec streamlit run main.py
+streamlit run main.py --server.port 8080
+
