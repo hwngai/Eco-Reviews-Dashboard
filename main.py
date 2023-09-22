@@ -48,7 +48,7 @@ def extract_url_parameters(url):
 
     return app_id, hl, gl
 
-@st.cache_data
+@st.cache
 def info_app_cached(app_id, hl, gl):
     try:
         result = app(
@@ -67,7 +67,7 @@ def info_app_cached(app_id, hl, gl):
 
     return score, reviews, installs
 
-@st.cache_data
+@st.cache
 def dowload_reviews_cached(app_id, hl, gl):
     try:
         result, continuation_token = reviews(
