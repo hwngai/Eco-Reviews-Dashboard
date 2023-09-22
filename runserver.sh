@@ -1,3 +1,3 @@
 #!/bin/bash
-echo "start uvicorn server"
-exec uvicorn main:app --host 0.0.0.0 --port 8080 --reload
+echo "start streamlit server"
+exec streamlit run main.py
