@@ -5,7 +5,47 @@ from google_play_scraper import app
 from google_play_scraper import Sort, reviews
 import pandas as pd
 import plotly.express as px
+import altair as alt
+import random
 import plotly.graph_objs as go
+import plotly.colors as pc
+import time
+import os
+import openai
+import yaml
+
+
+with open("config.yml", "r") as ymlfile:
+    try:
+        cfg = yaml.load(ymlfile, Loader=yaml.SafeLoader)
+    except yaml.YAMLError as e:
+        print("Lỗi khi mở file config.yml:", e)
+        cfg = None
+
+if cfg:
+    try:
+        KEY_1 = cfg['openai']['KEY_1']
+        KEY_2 = cfg['openai']['KEY_2']
+        ENDPOINT = cfg['openai']['ENDPOINT']
+
+    except KeyError as e:
+        print("Không tìm thấy key trong file config.yml:", e)
+        KEY_1 = None
+        KEY_2 = None
+        ENDPOINT = None
+else:
+    KEY_1 = None
+    KEY_2 = None
+    ENDPOINT = None
+
+
+openai.api_type = "azure"
+openai.api_base = ENDPOINT
+openai.api_version = "2023-05-15"
+openai.api_key = KEY_1
+
+
+
 
 ct = [
     'us', 'au', 'ca', 'cn', 'fr', 'de', 'it', 'kr', 'jp', 'ru', 'my', 'sg',
@@ -14,6 +54,9 @@ ct = [
     'ph', 'sa', 'ae', 'ke', 'ng', 'nz', 'ar'
 ]
 
+dx = [
+    '1000', '2000', '5000', '10000', 'all'
+]
 
 
 lg = [
@@ -48,7 +91,7 @@ def extract_url_parameters(url):
 
     return app_id, hl, gl
 
-@st.cache
+@st.cache_data
 def info_app_cached(app_id, hl, gl):
     try:
         result = app(
@@ -67,15 +110,15 @@ def info_app_cached(app_id, hl, gl):
 
     return score, reviews, installs
 
-@st.cache
-def dowload_reviews_cached(app_id, hl, gl):
+@st.cache_data
+def dowload_reviews_cached(app_id, hl, gl, count):
     try:
         result, continuation_token = reviews(
             app_id,
             lang=hl,  # defaults to 'en'
             country=gl,  # defaults to 'us'
             sort=Sort.NEWEST,  # defaults to Sort.NEWEST
-            count=40000,  # defaults to 100
+            count=count,  # defaults to 100
             filter_score_with=None  # defaults to None(means all score)
         )
         df = pd.DataFrame(result)
@@ -134,7 +177,7 @@ def main():
     timestamp = datetime.date.today()
     st.markdown(f"<p style='text-align: center;'>Last updated on {timestamp}</p>", unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         text_input = st.text_input("Enter Google Play App URL 👇")
@@ -142,21 +185,29 @@ def main():
         if not app_id:
             st.warning("Warning: Invalid Google Play App URL")
 
+
+
     with col2:
+        idx = st.selectbox(
+            label="Number of reviews",
+            options=dx
+        )
+
+    with col3:
         gl = st.selectbox(
             label="Country/Region",
             options=ct,
             index=ct.index(gl) if gl in ct else 0
         )
 
-    with col3:
+    with col4:
         hl = st.selectbox(
             label="Language",
             options=lg,
             index=lg.index(hl) if hl in lg else 0
         )
 
-    if text_input or gl or hl:
+    if text_input or gl or hl or idx:
         score, reviews, installs = info_app_cached(app_id, hl, gl)
 
         if installs:
@@ -169,8 +220,14 @@ def main():
 
             with col3:
                 generate_card("Total Downloads Since Release", "fas fa-download", installs)
-
-        reviews_df = dowload_reviews_cached(app_id, hl, gl)
+        try:
+            if idx == 'all':
+                count = 500000
+            else:
+                count = int(idx)
+            reviews_df = dowload_reviews_cached(app_id, hl, gl, count)
+        except:
+            st.warning("Warning: Invalid Number of reviews")
 
         if len(reviews_df) > 0:
             col1, col2 = st.columns(2)
@@ -219,34 +276,35 @@ def main():
                 )
                 st.plotly_chart(fig1, use_container_width=True)
 
-                # st.subheader("Star Over Time")
-                # fig2 = go.Figure()
-                # fig2.add_trace(go.Scatter(x=filtered_df['at'], y=filtered_df['score'], mode='lines+markers'))
-                #
-                # fig2.update_layout(
-                #     title="Star Over Time",
-                #     xaxis_title="Date",
-                #     yaxis_title="Star",
-                # )
-                #
-                # st.plotly_chart(fig2, use_container_width=True)
+                score_colors = {
+                    1: '#ff2b2b',
+                    2: '#7defa1',
+                    3: '#ffabab',
+                    4: '#0068c9',
+                    5: '#83c9ff'
+                }
 
-                # st.subheader("Star Over Time")
+                filtered_df['Month'] = filtered_df['at'].dt.to_period('M').astype(str)  # Chuyển cột 'Date' thành kiểu Period (tháng)
+                df2 = filtered_df.groupby(['Month', 'score']).size().reset_index(name='Count')
 
-                # Sử dụng px.scatter để tạo biểu đồ với màu sắc dựa trên cột 'score'
-                fig2 = px.scatter(
-                    filtered_df,
-                    x='at',
-                    y='score',
-                    color='score',  # Dựa trên giá trị cột 'score' để xác định màu sắc
-                    color_continuous_scale='Viridis',  # Chọn bảng màu (có thể thay đổi)
-                    title="Star Over Time",
-                    labels={'at': 'Date', 'score': 'Star'},
+                chart = alt.Chart(df2).mark_bar().encode(
+                    x='Month:O',
+                    y='Count:Q',
+                    color=alt.Color('score:N', scale=alt.Scale(domain=list(score_colors.keys()),
+                                                               range=list(score_colors.values())))
+                ).properties(
+                    width=600,
+                    height=400
+                ).properties(
+                    title='Star Over Time'
                 )
 
-                st.plotly_chart(fig2, use_container_width=True)
+                st.altair_chart(chart, use_container_width=True)
+
 
             with col2:
+                filtered_df = filtered_df[['at', 'userName', 'content', 'replyContent','score', 'thumbsUpCount', 'reviewCreatedVersion','Month']]
+                filtered_df = filtered_df.sort_values(by='thumbsUpCount', ascending=False)
                 st.dataframe(filtered_df, height=730)
 
                 csv_data = filtered_df.to_csv(index=False).encode('utf-8')
@@ -257,7 +315,7 @@ def main():
                     key="filtered_data_csv",
                 )
 
-                content_csv_data = filtered_df['content'].to_csv(index=False).encode('utf-8')
+                content_csv_data = filtered_df[['at','content', "thumbsUpCount"]].to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="Download content Column as CSV",
                     data=content_csv_data,
@@ -268,7 +326,49 @@ def main():
 
             st.subheader("AI Chat Reviews")
 
-            st.info("The AI Chat Reviews feature will be launching soon. Stay tuned for updates.")
+            # prompt = st.chat_input("Say something")
+            # if prompt:
+            #     st.write(f"User has sent the following prompt: {prompt}")
+            #     st.info("The AI Chat Reviews feature will be launching soon. Stay tuned for updates.")
+
+            if "messages" not in st.session_state:
+                st.session_state.messages = []
+
+            # Display chat messages from history on app rerun
+            for message in st.session_state.messages:
+                with st.chat_message(message["role"]):
+                    st.markdown(message["content"])
+
+            # Accept user input
+            if prompt := st.chat_input("What is up?"):
+                st.session_state.messages.append({"role": "user", "content": prompt})
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+                with st.chat_message("assistant"):
+                    message_placeholder = st.empty()
+                    full_response = ""
+
+                try:
+                    for response in openai.ChatCompletion.create(
+                            engine="EcoTest01",
+                            messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
+                            temperature=0.7,
+                            max_tokens=4000,
+                            top_p=0.95,
+                            frequency_penalty=0,
+                            presence_penalty=0,
+                            stop=None,
+                            stream=True,
+                    ):
+                        full_response += response.choices[0].delta.get("content", "")
+                        time.sleep(0.05)
+                        message_placeholder.markdown(full_response + "▌")
+                    message_placeholder.markdown(full_response)
+                    st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+                except Exception as e:
+                    st.error(f"An error occurred: {str(e)}")
+
 
 
 if __name__ == '__main__':

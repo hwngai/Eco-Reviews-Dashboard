@@ -11,3 +11,5 @@ jinja2>=3.0.0
 pandas
 plotly
 google-play-scraper
+openai
+PyYAML
