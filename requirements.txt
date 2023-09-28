@@ -13,3 +13,4 @@ plotly
 google-play-scraper
 openai
 PyYAML
+pycountry

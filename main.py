@@ -13,6 +13,7 @@ import time
 import os
 import openai
 import yaml
+import pycountry
 
 
 with open("config.yml", "r") as ymlfile:
@@ -57,7 +58,7 @@ ct = [
 dx = [
     '1000', '2000', '5000', '10000', 'all'
 ]
-
+ct = [f'{country.name} {country.flag}' for country in list(pycountry.countries)]
 
 lg = [
     'en-us', 'af', 'am', 'ar', 'az', 'be', 'bg', 'bn', 'bs', 'ca', 'cs', 'da',
@@ -179,9 +180,12 @@ def main():
 
     col1, col2, col3, col4 = st.columns(4)
 
+    print("main")
+
     with col1:
         text_input = st.text_input("Enter Google Play App URL 👇")
         app_id, hl, gl = extract_url_parameters(text_input)
+        print(hl, gl)
         if not app_id:
             st.warning("Warning: Invalid Google Play App URL")
 
@@ -197,7 +201,7 @@ def main():
         gl = st.selectbox(
             label="Country/Region",
             options=ct,
-            index=ct.index(gl) if gl in ct else 0
+            index=ct.index(gl) if gl in ct else 234
         )
 
     with col4:
@@ -207,25 +211,26 @@ def main():
             index=lg.index(hl) if hl in lg else 0
         )
 
-    if text_input or gl or hl or idx:
-        score, reviews, installs = info_app_cached(app_id, hl, gl)
-
+    if text_input or gl:
+        score, reviews, installs = info_app_cached(app_id, hl, pycountry.countries.get(flag=gl.split(" ")[-1]).alpha_2)
         if installs:
             col1, col2, col3 = st.columns(3)
             with col1:
-                generate_card("Average Rating", "fas fa-star", score)
+                generate_card(f"Average Rating  {gl.split(' ')[-1]}", "fas fa-star", score)
 
             with col2:
                 generate_card("Total Reviews", "fas fa-comments", reviews)
 
             with col3:
                 generate_card("Total Downloads Since Release", "fas fa-download", installs)
+
+    if text_input or hl or idx:
         try:
             if idx == 'all':
                 count = 500000
             else:
                 count = int(idx)
-            reviews_df = dowload_reviews_cached(app_id, hl, gl, count)
+            reviews_df = dowload_reviews_cached(app_id, hl, pycountry.countries.get(flag=gl.split(" ")[-1]).alpha_2, count)
         except:
             st.warning("Warning: Invalid Number of reviews")
 
@@ -326,10 +331,6 @@ def main():
 
             st.subheader("AI Chat Reviews")
 
-            # prompt = st.chat_input("Say something")
-            # if prompt:
-            #     st.write(f"User has sent the following prompt: {prompt}")
-            #     st.info("The AI Chat Reviews feature will be launching soon. Stay tuned for updates.")
 
             if "messages" not in st.session_state:
                 st.session_state.messages = []
