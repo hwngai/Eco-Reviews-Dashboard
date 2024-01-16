@@ -6,21 +6,18 @@ from google_play_scraper import Sort, reviews
 import pandas as pd
 import plotly.express as px
 import altair as alt
-import random
-import plotly.graph_objs as go
-import plotly.colors as pc
 import time
-import os
 import openai
 import yaml
 import pycountry
-
+import numpy as np
+from app_store_scraper import AppStore
+from itunes_app_scraper.scraper import AppStoreScraper
 
 with open("config.yml", "r") as ymlfile:
     try:
         cfg = yaml.load(ymlfile, Loader=yaml.SafeLoader)
     except yaml.YAMLError as e:
-        print("Lỗi khi mở file config.yml:", e)
         cfg = None
 
 if cfg:
@@ -30,7 +27,6 @@ if cfg:
         ENDPOINT = cfg['openai']['ENDPOINT']
 
     except KeyError as e:
-        print("Không tìm thấy key trong file config.yml:", e)
         KEY_1 = None
         KEY_2 = None
         ENDPOINT = None
@@ -39,24 +35,13 @@ else:
     KEY_2 = None
     ENDPOINT = None
 
-
 openai.api_type = "azure"
 openai.api_base = ENDPOINT
 openai.api_version = "2023-05-15"
 openai.api_key = KEY_1
 
-
-
-
-ct = [
-    'us', 'au', 'ca', 'cn', 'fr', 'de', 'it', 'kr', 'jp', 'ru', 'my', 'sg',
-    'tw', 'id', 'th', 'vn', 'in', 'gb', 'mo', 'hk', 'bh', 'qa', 'az', 'lb',
-    'kw', 'il', 'eg', 'br', 'cl', 'mx', 'tr', 'es', 'nl', 'no', 'pl', 'pt',
-    'ph', 'sa', 'ae', 'ke', 'ng', 'nz', 'ar'
-]
-
 dx = [
-    '1000', '2000', '5000', '10000', 'all'
+    '200','500', '1000', '2000', '5000', '10000', 'all'
 ]
 ct = [f'{country.name} {country.flag}' for country in list(pycountry.countries)]
 
@@ -74,64 +59,100 @@ lg = [
     'te', 'th', 'tr', 'uk', 'ur', 'uz', 'vi', 'zh', 'zh-cn'
 ]
 
+def extract_appStore_info_from_url(apple_url):
+    app_info_pattern = r'/([a-zA-Z0-9\-]+)\/id(\d+)'
+    gl_pattern = r"https://apps\.apple\.com/([a-z]{2})/app/.*"
 
-lnk = '<link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.12.1/css/all.css" crossorigin="anonymous">'
+    app_info_match = re.search(app_info_pattern, apple_url)
+    gl_match = re.search(gl_pattern, apple_url)
+
+    app_name, app_id = app_info_match.groups() if app_info_match else (None, None)
+    gl_value = gl_match.group(1) if gl_match else "us"
+
+    return app_name, app_id, gl_value
 
 def extract_url_parameters(url):
-    id_pattern = r'id=([^&]+)'
-    hl_pattern = r'hl=([^&]+)'
-    gl_pattern = r'gl=([^&]+)'
+    app_name, app_id, gl = extract_appStore_info_from_url(url)
 
-    id_match = re.search(id_pattern, url)
-    hl_match = re.search(hl_pattern, url)
-    gl_match = re.search(gl_pattern, url)
+    if app_id:
+        hl = "en"
+    else:
+        id_pattern = r'id=([^&]+)'
+        hl_pattern = r'hl=([^&]+)'
+        gl_pattern = r'gl=([^&]+)'
 
-    app_id = id_match.group(1) if id_match else None
-    hl = hl_match.group(1) if hl_match else "en"  # Default to English ("en") if not found
-    gl = gl_match.group(1) if gl_match else "us"  # Default to United States ("us") if not found
+        id_match = re.search(id_pattern, url)
+        hl_match = re.search(hl_pattern, url)
+        gl_match = re.search(gl_pattern, url)
 
-    return app_id, hl, gl
+        app_id = id_match.group(1) if id_match else None
+        hl = hl_match.group(1) if hl_match else "en"
+        gl = gl_match.group(1) if gl_match else "us"
+
+    return app_name, app_id, hl, gl
 
 @st.cache_data
-def info_app_cached(app_id, hl, gl):
+def info_app_cached(app_name, app_id, hl, gl):
     try:
-        result = app(
-            app_id,
-            lang=hl,
-            country=gl
-        )
+        if app_name:
+            scraper = AppStoreScraper()
+            app_details = scraper.get_app_details(app_id, country=gl, lang=hl)
+            reviews = app_details['userRatingCountForCurrentVersion']
+            installs = "*"
+            score = app_details['averageUserRating']
 
-        reviews = result['reviews']
-        installs = result['installs']
-        score = result['score']
+        else:
+            result = app(
+                app_id,
+                lang=hl,
+                country=gl
+            )
+
+            reviews = result['reviews']
+            installs = result['installs']
+            score = result['score']
 
     except Exception as e:
         print("An error occurred:", str(e))
-        score, reviews, installs = None, None, None
+        score, reviews, installs = 0, 0, 0
 
     return score, reviews, installs
 
 @st.cache_data
-def dowload_reviews_cached(app_id, hl, gl, count):
+def dowload_reviews_cached(app_name, app_id, hl, gl, count):
     try:
-        result, continuation_token = reviews(
-            app_id,
-            lang=hl,  # defaults to 'en'
-            country=gl,  # defaults to 'us'
-            sort=Sort.NEWEST,  # defaults to Sort.NEWEST
-            count=count,  # defaults to 100
-            filter_score_with=None  # defaults to None(means all score)
-        )
-        df = pd.DataFrame(result)
-        df = df[['at', 'userName', 'content', 'replyContent', 'score', 'thumbsUpCount', 'reviewCreatedVersion']]
+        if app_name:
+            appStore = AppStore(country=gl, app_name=app_name, app_id=app_id)
+            appStore.review(how_many=count)
+
+            df = pd.DataFrame(np.array(appStore.reviews), columns=['review'])
+            df = df.join(pd.DataFrame(df.pop('review').tolist()))
+
+            name_mapping = {'date': 'at', 'review': 'content', 'rating': 'score', 'developerResponse': 'replyContent'}
+            df = df.rename(columns=name_mapping)
+
+            df['thumbsUpCount'] = pd.Series(dtype="float64")
+            df['reviewCreatedVersion'] = pd.Series(dtype="float64")
+
+            df = df[['at', 'userName', 'content', 'replyContent', 'score', 'thumbsUpCount', 'reviewCreatedVersion']]
+        else:
+            result, continuation_token = reviews(
+                app_id,
+                lang=hl,
+                country=gl,
+                sort=Sort.NEWEST,
+                count=count,
+                filter_score_with=None
+            )
+            df = pd.DataFrame(result)
+            df = df[['at', 'userName', 'content', 'replyContent', 'score', 'thumbsUpCount', 'reviewCreatedVersion']]
     except Exception as e:
         print("An error occurred:", str(e))
         df = pd.DataFrame()
     return df
 
-
-
 def generate_card(title, iconname, value):
+    lnk = '<link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.12.1/css/all.css" crossorigin="anonymous">'
     st.markdown(f"<h4>{title}</h4>", unsafe_allow_html=True)
     wch_colour_box = (255, 255, 255)
     wch_colour_font = (0, 0, 0)
@@ -177,19 +198,17 @@ def main():
     st.markdown("<h1 style='text-align: center; color: #4da9df;'>Eco Reviews Dashboard</h1>", unsafe_allow_html=True)
     timestamp = datetime.date.today()
     st.markdown(f"<p style='text-align: center;'>Last updated on {timestamp}</p>", unsafe_allow_html=True)
+    st.write("Example Google Play App URL: https://play.google.com/store/apps/details?id=com.eco.note&hl=en&gl=US")
+    st.write("Example 🍎 Apple App URL: https://apps.apple.com/us/app/slack/id618783545")
 
     col1, col2, col3, col4 = st.columns(4)
 
-    print("main")
-
     with col1:
-        text_input = st.text_input("Enter Google Play App URL 👇")
-        app_id, hl, gl = extract_url_parameters(text_input)
-        print(hl, gl)
+
+        text_input = st.text_input("Enter Google Play App URL or 🍎 Apple App URL 👇")
+        app_name, app_id, hl, gl = extract_url_parameters(text_input)
         if not app_id:
-            st.warning("Warning: Invalid Google Play App URL")
-
-
+            st.warning("Warning: Invalid Google Play App URL or Apple App URL")
 
     with col2:
         idx = st.selectbox(
@@ -212,7 +231,7 @@ def main():
         )
 
     if text_input or gl:
-        score, reviews, installs = info_app_cached(app_id, hl, pycountry.countries.get(flag=gl.split(" ")[-1]).alpha_2)
+        score, reviews, installs = info_app_cached(app_name, app_id, hl, pycountry.countries.get(flag=gl.split(" ")[-1]).alpha_2)
         if installs:
             col1, col2, col3 = st.columns(3)
             with col1:
@@ -230,7 +249,7 @@ def main():
                 count = 500000
             else:
                 count = int(idx)
-            reviews_df = dowload_reviews_cached(app_id, hl, pycountry.countries.get(flag=gl.split(" ")[-1]).alpha_2, count)
+            reviews_df = dowload_reviews_cached(app_name, app_id, hl, pycountry.countries.get(flag=gl.split(" ")[-1]).alpha_2, count)
         except:
             st.warning("Warning: Invalid Number of reviews")
 
@@ -289,7 +308,7 @@ def main():
                     5: '#83c9ff'
                 }
 
-                filtered_df['Month'] = filtered_df['at'].dt.to_period('M').astype(str)  # Chuyển cột 'Date' thành kiểu Period (tháng)
+                filtered_df['Month'] = filtered_df['at'].dt.to_period('M').astype(str)
                 df2 = filtered_df.groupby(['Month', 'score']).size().reset_index(name='Count')
 
                 chart = alt.Chart(df2).mark_bar().encode(
@@ -309,7 +328,8 @@ def main():
 
             with col2:
                 filtered_df = filtered_df[['at', 'userName', 'content', 'replyContent','score', 'thumbsUpCount', 'reviewCreatedVersion','Month']]
-                filtered_df = filtered_df.sort_values(by='thumbsUpCount', ascending=False)
+                filtered_df = filtered_df.sort_values(by='at', ascending=False)
+                filtered_df.reset_index(drop=True, inplace=True)
                 st.dataframe(filtered_df, height=730)
 
                 csv_data = filtered_df.to_csv(index=False).encode('utf-8')
@@ -335,12 +355,10 @@ def main():
             if "messages" not in st.session_state:
                 st.session_state.messages = []
 
-            # Display chat messages from history on app rerun
             for message in st.session_state.messages:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"])
 
-            # Accept user input
             if prompt := st.chat_input("What is up?"):
                 st.session_state.messages.append({"role": "user", "content": prompt})
                 with st.chat_message("user"):
@@ -349,26 +367,28 @@ def main():
                     message_placeholder = st.empty()
                     full_response = ""
 
-                try:
-                    for response in openai.ChatCompletion.create(
-                            engine="EcoTest01",
-                            messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
-                            temperature=0.7,
-                            max_tokens=4000,
-                            top_p=0.95,
-                            frequency_penalty=0,
-                            presence_penalty=0,
-                            stop=None,
-                            stream=True,
-                    ):
-                        full_response += response.choices[0].delta.get("content", "")
-                        time.sleep(0.05)
-                        message_placeholder.markdown(full_response + "▌")
-                    message_placeholder.markdown(full_response)
-                    st.session_state.messages.append({"role": "assistant", "content": full_response})
+                st.error(f"We are currently awaiting budget approval from our manager Tuong Vu to proceed with further development. Thank you for your patience.")
 
-                except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
+                # try:
+                #     for response in openai.ChatCompletion.create(
+                #             engine="EcoTest01",
+                #             messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages],
+                #             temperature=0.7,
+                #             max_tokens=4000,
+                #             top_p=0.95,
+                #             frequency_penalty=0,
+                #             presence_penalty=0,
+                #             stop=None,
+                #             stream=True,
+                #     ):
+                #         full_response += response.choices[0].delta.get("content", "")
+                #         time.sleep(0.05)
+                #         message_placeholder.markdown(full_response + "▌")
+                #     message_placeholder.markdown(full_response)
+                #     st.session_state.messages.append({"role": "assistant", "content": full_response})
+                #
+                # except Exception as e:
+                #     st.error(f"An error occurred: {str(e)}")
 
 
 
